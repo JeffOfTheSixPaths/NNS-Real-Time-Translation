@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, send_from_directory
 from werkzeug.utils import secure_filename
 import os
 from datetime import datetime
@@ -6,6 +6,8 @@ import sys
 
 # Import STT module directly since it's in the same directory
 from STT import transcribe_audio
+from gemini import translate_text
+from TTS import synthesize_audio_bytes
 
 app = Flask(__name__)
 
@@ -387,6 +389,20 @@ INDEX_HTML = """
         border-radius: 12px;
         border: 1px solid var(--border);
     }
+    /* Transcription box shown below the record button */
+    .transcription-box {
+        width: 100%;
+        max-width: 520px;
+        color: var(--text);
+        background: var(--panel-bg);
+        padding: 12px 14px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+        font-size: 0.98rem;
+        line-height: 1.4;
+        text-align: left;
+    }
     /* Clear styles and fix layout */
     .controls-panel,
     .output-panel {
@@ -445,9 +461,8 @@ INDEX_HTML = """
         <div class="row">
             <label for="inputLang">Input language:</label>
             <select id="inputLang" title="Language spoken into the microphone">
-                <option value="auto">Detect (auto)</option>
-                <option value="en">English</option>
                 <option value="es">Spanish</option>
+                <option value="en">English</option>
                 <option value="fr">French</option>
                 <option value="de">German</option>
             </select>
@@ -455,6 +470,11 @@ INDEX_HTML = """
 
         <div class="row">
             <button id="recordBtn">Start Recording</button>
+        </div>
+
+        <!-- Transcription display shown below the record button -->
+        <div class="row">
+            <div id="transcribed" class="transcription-box">Nothing yet</div>
         </div>
 
         <div class="row">
@@ -473,7 +493,6 @@ INDEX_HTML = """
                 <option value="fr">French</option>
                 <option value="de">German</option>
             </select>
-            <button id="clear">Clear Output</button>
         </div>
         
         <div class="output-section">
@@ -487,12 +506,9 @@ const inputLang = document.getElementById('inputLang');
 const lang = document.getElementById('lang');
 const output = document.getElementById('output');
 const status = document.getElementById('status');
-const clearBtn = document.getElementById('clear');
+const transcriptionBox = document.getElementById('transcribed');
 
-clearBtn.addEventListener('click', () => {
-    output.textContent = 'Nothing yet';
-    status.textContent = 'Idle';
-});
+// Clear Output button removed; use page refresh to reset UI or implement another control if needed.
 
 // Audio recording logic: press to start, press again to stop and upload
 const recordBtn = document.getElementById('recordBtn');
@@ -507,12 +523,13 @@ async function startRecording() {
         audioChunks = [];
         mediaRecorder.addEventListener('dataavailable', e => audioChunks.push(e.data));
         mediaRecorder.addEventListener('stop', onRecordingStop);
-        mediaRecorder.start();
+    mediaRecorder.start();
+    // Show immediate listening state in the transcription box
+    try { if (transcriptionBox) transcriptionBox.textContent = 'Listening...'; } catch(e) {}
         
-        // Disable controls immediately
-        inputLang.disabled = true;
-        lang.disabled = true;
-        clearBtn.disabled = true;
+    // Disable controls immediately
+    inputLang.disabled = true;
+    lang.disabled = true;
         
         // Start countdown from 3
         let countdown = 3;
@@ -554,7 +571,6 @@ function stopRecording() {
     // Re-enable controls
     inputLang.disabled = false;
     lang.disabled = false;
-    clearBtn.disabled = false;
 }
 
 function onRecordingStop() {
@@ -563,19 +579,34 @@ function onRecordingStop() {
     // Provide a filename; server will sanitize
     form.append('audio_data', blob, 'recording.webm');
     // include the selected input language (spoken language) if present
-    try { form.append('input_lang', inputLang ? inputLang.value : 'auto'); } catch(e) {}
+    try { 
+        form.append('input_lang', inputLang ? inputLang.value : 'auto');
+        form.append('target_lang', lang ? lang.value : 'en');
+    } catch(e) {}
     status.textContent = 'Uploading...';
     fetch('/upload_audio', { method: 'POST', body: form })
         .then(r => r.json())
         .then(data => {
             if (data.success) {
                 status.textContent = 'Transcription complete';
-                if (data.transcription) {
-                    output.textContent = data.transcription;
-                } else {
-                    output.textContent = 'No transcription available';
+                // Show transcription under the record button
+                if (transcriptionBox) transcriptionBox.textContent = data.transcription || 'No transcription available';
+                // Show only the translated text in the translation output area
+                output.textContent = data.translated || 'Translation not available';
+                // If server returned an audio URL, play it
+                try {
+                    if (data.audio_url) {
+                        const audio = new Audio(data.audio_url);
+                        // allow autoplay in browsers that permit it; otherwise user gesture already occurred
+                        audio.play().catch(err => console.warn('Audio playback failed', err));
+                    }
+                } catch (err) {
+                    console.error('Failed to play returned audio', err);
                 }
             } else {
+                // Server returned an error
+                if (transcriptionBox) transcriptionBox.textContent = data.transcription || 'No transcription available';
+                output.textContent = '';
                 status.textContent = 'Error: ' + (data.error || 'Unknown error');
                 console.error('Upload failed:', data);
             }
@@ -606,29 +637,18 @@ def index():
 @app.route('/translate', methods=['POST'])
 def translate():
         """
-        Placeholder translation endpoint.
-        Replace the body of translate_text() with real translation logic or an API call.
+        Endpoint that uses Gemini to translate text
         """
         data = request.get_json(force=True) or {}
         text = data.get('text', '')
-        target = data.get('target', 'en')
+        target_lang = data.get('target', 'en')
+        input_lang = data.get('input_lang', 'auto')
 
-        def translate_text(s, tgt):
-                # Simple stub: demonstrate different pretend behavior per language
-                s = s.strip()
-                if not s:
-                        return ''
-                if tgt == 'en':
-                        return s  # no-op for English
-                if tgt == 'es':
-                        return f"[ES] {s[::-1]}"  # reversed as a stub
-                if tgt == 'fr':
-                        return f"[FR] {s.upper()}"  # uppercase as a stub
-                if tgt == 'de':
-                        return f"[DE] {s.split()[::-1].join(' ')}"  # crude word-reverse
-                return s
+        if not text:
+            return jsonify({'translated': ''})
 
-        translated = translate_text(text, target)
+        # Use Gemini's translation function
+        translated = translate_text(text, target_lang=target_lang, input_lang=input_lang)
         return jsonify({'translated': translated})
 
 
@@ -675,11 +695,36 @@ def upload_audio():
         # Transcribe the audio using our STT module
         transcription = transcribe_audio(path, language_code=lang_code)
         
+        # Get the target language from form data
+        target_lang = request.form.get('target_lang', 'en')
+        
+        # Translate the transcription using Gemini
+        translated_text = translate_text(
+            input_text=transcription,
+            target_lang=target_lang,
+            input_lang=input_lang if input_lang != 'auto' else 'auto'
+        )
+
+        # Synthesize translated text to audio (mp3 bytes)
+        try:
+            audio_bytes = synthesize_audio_bytes(translated_text)
+            audio_filename = secure_filename(f"{os.path.splitext(filename)[0]}_translated.mp3")
+            audio_path = os.path.join(uploads_dir, audio_filename)
+            with open(audio_path, 'wb') as af:
+                af.write(audio_bytes)
+            audio_url = f"/audio/{audio_filename}"
+        except Exception as e:
+            # If TTS fails, don't block the response; return transcription/translation without audio
+            audio_url = None
+            print("TTS error:", e)
+
         return jsonify({
-            'success': True, 
-            'filename': filename, 
+            'success': True,
+            'filename': filename,
             'input_lang': input_lang,
-            'transcription': transcription
+            'transcription': transcription,
+            'translated': translated_text,
+            'audio_url': audio_url
         })
         
     except Exception as e:
@@ -687,6 +732,13 @@ def upload_audio():
             'success': False,
             'error': str(e)
         }), 500
+
+
+@app.route('/audio/<path:filename>')
+def serve_audio(filename):
+    """Serve generated audio files from uploads/"""
+    uploads_dir = os.path.join(os.path.dirname(__file__), 'uploads')
+    return send_from_directory(uploads_dir, filename)
 
 if __name__ == '__main__':
         # Run the app: visit http://127.0.0.1:5000/
