@@ -2,6 +2,10 @@ from flask import Flask, request, jsonify, render_template_string
 from werkzeug.utils import secure_filename
 import os
 from datetime import datetime
+import sys
+
+# Import STT module directly since it's in the same directory
+from STT import transcribe_audio
 
 app = Flask(__name__)
 
@@ -11,7 +15,7 @@ INDEX_HTML = """
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Basic Flask Interface</title>
+    <title>NNH Real Time Translation</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <!-- Use Inter from Google Fonts for a modern look -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -73,40 +77,57 @@ INDEX_HTML = """
         /* Modern Select and Button Base Styles */
         select, button {
             border-radius: 12px;
-            padding: 0.75rem 1.25rem;
             font-size: 0.95rem;
             font-weight: 600;
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            border: 2px solid transparent;
             background: var(--panel-bg);
             color: var(--text);
             cursor: pointer;
             position: relative;
-            overflow: hidden;
+            z-index: 2;
         }
+
+        /* Select Styles */
         select {
-            background: var(--panel-bg);
-            border: 2px solid var(--border, rgba(0,0,0,0.1));
-            padding-right: 2.5rem;
+            padding: 10px 36px 10px 16px;
+            font-size: 15px;
+            font-weight: 500;
+            border: 2px solid var(--border);
+            background-color: var(--panel-bg);
             appearance: none;
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%23FF7940' viewBox='0 0 16 16'%3E%3Cpath d='M8 10.5l4-4H4z'/%3E%3C/svg%3E");
             background-repeat: no-repeat;
-            background-position: right 1rem center;
+            background-position: right 12px center;
+            transition: all 0.2s ease;
         }
-        select:hover, button:hover {
-            border-color: var(--accent);
-            transform: translateY(-1px);
-            box-shadow: 
-                0 4px 12px rgba(255, 121, 64, 0.15),
-                0 1px 3px rgba(0,0,0,0.05);
-        }
-        select:focus, button:focus {
-            outline: none;
-            border-color: var(--accent);
-            box-shadow: 
-                0 0 0 3px var(--accent-glow, rgba(255, 121, 64, 0.2)),
-                0 4px 12px rgba(255, 121, 64, 0.15);
-        }
+
+    select:not(:disabled) {
+        border: 2px solid var(--border);
+    }
+
+    select:not(:disabled):hover {
+        border-color: var(--accent);
+        transform: translateY(-1px);
+        box-shadow: 
+            0 4px 12px rgba(255, 121, 64, 0.15),
+            0 1px 3px rgba(0,0,0,0.05);
+    }
+
+    select:not(:disabled):focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 
+            0 0 0 3px var(--accent-glow),
+            0 4px 12px rgba(255, 121, 64, 0.15);
+    }
+
+    select:disabled {
+        background: var(--disabled);
+        color: var(--text-light);
+        cursor: not-allowed;
+        opacity: 0.7;
+        border-color: var(--border);
+    }
         /* Fancy Record Button */
         #recordBtn {
             background: linear-gradient(135deg, var(--accent), var(--accent-dark));
@@ -196,6 +217,76 @@ INDEX_HTML = """
         font-weight: 800;
         letter-spacing: -0.02em;
     }
+
+    /* Button Styles */
+    button {
+        padding: 10px 20px;
+        font-size: 15px;
+        font-weight: 600;
+        border: none;
+        border-radius: 12px;
+        background: var(--panel-bg);
+        color: var(--text);
+        cursor: pointer;
+        transition: all 0.2s ease;
+        position: relative;
+        z-index: 1;
+    }
+
+    button:not(:disabled) {
+        box-shadow: 
+            0 2px 4px rgba(0,0,0,0.05),
+            0 1px 2px rgba(0,0,0,0.1);
+    }
+
+    button:not(#recordBtn):not(:disabled) {
+        border: 2px solid var(--border);
+    }
+
+    button:not(:disabled):hover {
+        transform: translateY(-1px);
+        box-shadow: 
+            0 4px 8px rgba(0,0,0,0.1),
+            0 2px 4px rgba(0,0,0,0.05);
+    }
+
+    button:not(:disabled):active {
+        transform: translateY(1px);
+        box-shadow: 
+            0 2px 4px rgba(0,0,0,0.05),
+            0 1px 2px rgba(0,0,0,0.1);
+    }
+
+    button:disabled {
+        background: var(--disabled);
+        color: var(--text-light);
+        cursor: not-allowed;
+        opacity: 0.7;
+    }
+
+    /* Record Button Specific Styles */
+    #recordBtn:not(:disabled) {
+        background: linear-gradient(135deg, var(--accent), var(--accent-dark));
+        color: white;
+        padding: 12px 24px;
+        box-shadow: 
+            0 2px 4px rgba(0,0,0,0.1),
+            0 6px 12px rgba(255, 121, 64, 0.2);
+        text-shadow: 0 1px 1px rgba(0,0,0,0.1);
+    }
+
+    #recordBtn:not(:disabled):hover {
+        background: linear-gradient(135deg, var(--accent-light), var(--accent));
+        box-shadow: 
+            0 4px 8px rgba(0,0,0,0.15),
+            0 8px 16px rgba(255, 121, 64, 0.3);
+    }
+
+    #recordBtn.recording {
+        background: linear-gradient(135deg, #e64040, #c01010) !important;
+        animation: pulse 2s infinite;
+    }
+
     /* Fancy divider with gradient and glow */
     .divider { 
         height: 4px; 
@@ -296,19 +387,41 @@ INDEX_HTML = """
         border-radius: 12px;
         border: 1px solid var(--border);
     }
-    /* controls and output now flex equally within the content area */
-    .controls-panel { display:flex; align-items:center; gap:0.75rem; padding: 18px; background: linear-gradient(180deg, rgba(240,242,245,0.6), rgba(250,250,250,0.6)); border-radius:8px; border:1px solid rgba(220,224,228,0.7); flex:1 1 0; min-height:0; }
-     /* divider between sections - zero margin so it sits exactly between halves */
-     .divider { height: 1px; background: #e6e9ec; border-radius: 1px; margin: 0; }
-     /* force controls and output to occupy exactly half of the internal content height each
-         subtracting the divider height (1px) by using calc((100% - 1px)/2) as flex-basis */
-     .controls-panel { display:flex; align-items:center; gap:0.75rem; padding: 18px; background: linear-gradient(180deg, rgba(240,242,245,0.6), rgba(250,250,250,0.6)); border-radius:8px; border:1px solid rgba(220,224,228,0.7); flex: 0 0 calc((100% - 1px) / 2); min-height:0; }
-     .output-panel { padding: 20px; border-radius:8px; background: transparent; flex: 0 0 calc((100% - 1px) / 2); min-height:0; }
-    /* clearly assign halves: keep controls visually prominent on top */
-    .controls-panel { flex: 0 0 auto; }
-    .output-panel { flex: 0 0 auto; }
-    .row {display:flex; gap:0.5rem; align-items:center; margin:0;}
-    select, button {padding:0.5rem 0.75rem; font-size:1rem; border-radius:6px; border:1px solid #e0e3e8; background:#fff}
+    /* Clear styles and fix layout */
+    .controls-panel,
+    .output-panel {
+        flex: 0 0 calc((100% - 10px) / 2);
+        min-height: 0;
+        padding: 24px;
+        border-radius: 16px;
+    }
+
+    .controls-panel {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        gap: 1.5rem;
+        background: var(--control-bg);
+        border: 1px solid rgba(255, 121, 64, 0.15);
+        box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.6);
+    }
+
+    .output-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        background: var(--input-bg);
+        border: 1px solid var(--border);
+    }
+
+    .row {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        width: 100%;
+        justify-content: center;
+    }
         #output {white-space:pre-wrap; background:#f7f7f7; padding:0.8rem; border-radius:6px; min-height:3rem;}
         .muted {color:#666; font-size:0.9rem;}
         @media (max-width: 900px) {
@@ -396,10 +509,16 @@ async function startRecording() {
         mediaRecorder.addEventListener('stop', onRecordingStop);
         mediaRecorder.start();
         recordBtn.textContent = 'Stop Recording';
+        recordBtn.classList.add('recording');
         status.textContent = 'Recording...';
+        // Disable other controls while recording
+        inputLang.disabled = true;
+        lang.disabled = true;
+        clearBtn.disabled = true;
     } catch (err) {
         console.error('Microphone access denied or error:', err);
         status.textContent = 'Microphone error';
+        recordBtn.classList.remove('recording');
     }
 }
 
@@ -412,6 +531,11 @@ function stopRecording() {
         localStream = null;
     }
     recordBtn.textContent = 'Start Recording';
+    recordBtn.classList.remove('recording');
+    // Re-enable controls
+    inputLang.disabled = false;
+    lang.disabled = false;
+    clearBtn.disabled = false;
 }
 
 function onRecordingStop() {
@@ -425,8 +549,17 @@ function onRecordingStop() {
     fetch('/upload_audio', { method: 'POST', body: form })
         .then(r => r.json())
         .then(data => {
-            status.textContent = data.success ? ('Saved: ' + data.filename + (data.input_lang ? (' — input: ' + data.input_lang) : '')) : 'Upload failed';
-            console.log('Upload response', data);
+            if (data.success) {
+                status.textContent = 'Transcription complete';
+                if (data.transcription) {
+                    output.textContent = data.transcription;
+                } else {
+                    output.textContent = 'No transcription available';
+                }
+            } else {
+                status.textContent = 'Error: ' + (data.error || 'Unknown error');
+                console.error('Upload failed:', data);
+            }
         })
         .catch(err => {
             console.error('Upload error', err);
@@ -487,27 +620,54 @@ def upload_audio():
     uploads_dir = os.path.join(os.path.dirname(__file__), 'uploads')
     os.makedirs(uploads_dir, exist_ok=True)
 
-    # Flask provides files for multipart form data
-    file = request.files.get('audio_data')
-    if not file:
-        # Try raw data fallback
-        data = request.get_data()
-        if not data:
-            return jsonify({'success': False, 'error': 'No audio data received'}), 400
-        filename = f"recording-{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}.webm"
-        path = os.path.join(uploads_dir, secure_filename(filename))
-        with open(path, 'wb') as f:
-            f.write(data)
-        # read optional input language from form data (may be empty for raw fallback)
-        input_lang = request.form.get('input_lang') or request.args.get('input_lang') or None
-        return jsonify({'success': True, 'filename': os.path.basename(path), 'input_lang': input_lang})
+    try:
+        # Flask provides files for multipart form data
+        file = request.files.get('audio_data')
+        if not file:
+            # Try raw data fallback
+            data = request.get_data()
+            if not data:
+                return jsonify({'success': False, 'error': 'No audio data received'}), 400
+            filename = f"recording-{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}.webm"
+            path = os.path.join(uploads_dir, secure_filename(filename))
+            with open(path, 'wb') as f:
+                f.write(data)
+        else:
+            filename = secure_filename(file.filename or f"recording-{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}.webm")
+            path = os.path.join(uploads_dir, filename)
+            file.save(path)
 
-    filename = secure_filename(file.filename or f"recording-{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}.webm")
-    save_path = os.path.join(uploads_dir, filename)
-    file.save(save_path)
-    # capture the declared input language (spoken language)
-    input_lang = request.form.get('input_lang') or request.args.get('input_lang') or None
-    return jsonify({'success': True, 'filename': filename, 'input_lang': input_lang})
+        # Get the input language from form data
+        input_lang = request.form.get('input_lang') or request.args.get('input_lang')
+        
+        # Convert 'auto' to None for language detection
+        lang_code = None if input_lang == 'auto' else input_lang
+        
+        # Convert language codes to ElevenLabs format
+        lang_map = {
+            'en': 'eng',
+            'es': 'spa',
+            'fr': 'fra',
+            'de': 'deu'
+        }
+        if lang_code in lang_map:
+            lang_code = lang_map[lang_code]
+        
+        # Transcribe the audio using our STT module
+        transcription = transcribe_audio(path, language_code=lang_code)
+        
+        return jsonify({
+            'success': True, 
+            'filename': filename, 
+            'input_lang': input_lang,
+            'transcription': transcription
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 if __name__ == '__main__':
         # Run the app: visit http://127.0.0.1:5000/
