@@ -438,7 +438,7 @@ INDEX_HTML = """
     <div class="side-rect left" aria-hidden="true"></div>
     <div class="side-rect right" aria-hidden="true"></div>
     <div class="content">
-    <h1>Basic Flask Website Interface</h1>
+    <h1>NNS Real Time Translation</h1>
     <p class="muted">Use the record button to capture audio. Press once to start and again to stop and upload.</p>
 
     <div class="controls-panel">
@@ -508,13 +508,28 @@ async function startRecording() {
         mediaRecorder.addEventListener('dataavailable', e => audioChunks.push(e.data));
         mediaRecorder.addEventListener('stop', onRecordingStop);
         mediaRecorder.start();
-        recordBtn.textContent = 'Stop Recording';
-        recordBtn.classList.add('recording');
-        status.textContent = 'Recording...';
-        // Disable other controls while recording
+        
+        // Disable controls immediately
         inputLang.disabled = true;
         lang.disabled = true;
         clearBtn.disabled = true;
+        
+        // Start countdown from 3
+        let countdown = 3;
+        recordBtn.textContent = `Starting in ${countdown}...`;
+        
+        const countdownInterval = setInterval(() => {
+            countdown--;
+            if (countdown > 0) {
+                recordBtn.textContent = `Starting in ${countdown}...`;
+            } else {
+                clearInterval(countdownInterval);
+                recordBtn.textContent = 'Stop Recording';
+                recordBtn.classList.add('recording');
+                status.textContent = 'Recording...';
+            }
+        }, 1000);
+        
     } catch (err) {
         console.error('Microphone access denied or error:', err);
         status.textContent = 'Microphone error';
@@ -530,8 +545,12 @@ function stopRecording() {
         localStream.getTracks().forEach(t => t.stop());
         localStream = null;
     }
+    
+    // Clear any potential countdown styles
+    recordBtn.style.animation = 'none';
     recordBtn.textContent = 'Start Recording';
     recordBtn.classList.remove('recording');
+    
     // Re-enable controls
     inputLang.disabled = false;
     lang.disabled = false;
