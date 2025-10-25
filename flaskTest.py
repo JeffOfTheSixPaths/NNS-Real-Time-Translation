@@ -465,6 +465,7 @@ INDEX_HTML = """
                 <option value="en">English</option>
                 <option value="fr">French</option>
                 <option value="de">German</option>
+                <option value="zh">Chinese</option>
             </select>
         </div>
 
@@ -492,6 +493,7 @@ INDEX_HTML = """
                 <option value="es">Spanish</option>
                 <option value="fr">French</option>
                 <option value="de">German</option>
+                <option value="zh">Chinese</option>
             </select>
         </div>
         
@@ -687,7 +689,8 @@ def upload_audio():
             'en': 'eng',
             'es': 'spa',
             'fr': 'fra',
-            'de': 'deu'
+            'de': 'deu',
+            'zh' : 'cmn'
         }
         if lang_code in lang_map:
             lang_code = lang_map[lang_code]

@@ -23,6 +23,7 @@ def translate_text(input_text: str, target_lang: str, input_lang: str = "auto") 
         "es": "Spanish",
         "fr": "French",
         "de": "German",
+        "zh": "Chinese",
         "auto": "the detected language"
     }
 
