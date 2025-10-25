@@ -1,3 +1,96 @@
 # NNS-Real-Time-Translation
+**Timeline**
+Team Roles (4-Person Setup)
+Role	Main Focus	Key Deliverables
+Frontend Lead	Builds the React/Next.js interface	Layout, translation panels, mic/tts buttons, loading/error states
+Backend/API Lead	Integrates Gemini & ElevenLabs	API routes /api/translate, /api/tts, handles env keys & responses
+Speech & Audio Lead	Implements mic (Web Speech API) & audio playback	Voice input/output, TTS stream handling
+DevOps/Docs & Design Lead	Manages deployment, docs, and demo assets	Vercel deploy, README, architecture diagram, slides, demo video
+🕒 Adjusted Timeline (4-Person Version)
+Saturday
 
-README
+2:00 – 2:30 PM – Kickoff & Role Assignment
+
+Define MVP (Spanish ↔ English text + speech).
+
+Set up repo (GitHub), shared Google Doc for notes.
+
+2:30 – 3:30 PM – Project Scaffolding
+
+Frontend: create-next-app, TailwindCSS.
+
+Backend: Setup /api/translate & /api/tts stubs.
+
+DevOps: Create .env.example, push initial commit.
+
+3:30 – 5:00 PM – Translation Core
+
+Backend lead: Gemini translation route working.
+
+Frontend lead: Input/output text boxes + translate button.
+
+Test text → text both directions.
+
+5:00 – 6:30 PM – Speech Input (STT)
+
+Audio lead: Add mic button using Web Speech API.
+
+Backend lead: Integrate with /api/translate.
+
+6:30 – 8:00 PM – TTS (Voice Output)
+
+Audio lead: ElevenLabs integration for English & Spanish.
+
+Frontend: Add play/pause buttons, audio player.
+
+8:00 – 9:00 PM – UI & Quality
+
+Frontend + design: Styling, layout polish, mobile responsiveness.
+
+Backend: Language detection and error handling.
+
+9:00 – 10:00 PM – Testing & Bug Fixes
+
+All test together (4 flows).
+
+Log any edge cases, refine prompt for Gemini.
+
+10:00 – 11:00 PM – Documentation
+
+DevOps: Write README (setup, APIs, usage).
+
+Audio lead: Record test clips for demo.
+
+11:00 PM – 12:00 AM – Backup & Freeze
+
+Push final working commit.
+
+Deploy to Vercel.
+
+Everyone back up .env locally.
+
+Sunday
+
+8:00 – 9:30 AM – Hardening
+
+Final tests on different browsers.
+
+Add error fallback for missing mic permissions.
+
+9:30 – 10:30 AM – Demo Prep
+
+Prepare 90-second pitch outline: Problem → Solution → Demo → Impact.
+
+Assign speaker roles for judges.
+
+10:30 – 11:00 AM – Demo Recording
+
+DevOps lead records live screen demo.
+
+Capture 2–3 screenshots.
+
+11:00 AM – 12:00 PM – Submission & Wrap-Up
+
+Submit project form (repo link + demo video).
+
+Celebrate 🎉
