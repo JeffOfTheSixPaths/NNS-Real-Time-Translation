@@ -561,6 +561,18 @@ let processor = null;
 let mediaStream = null;
 let sessionId = null;
 let isStarting = false;
+// Queue for finalized text to be translated periodically
+let finalizedQueue = [];
+
+function flushTranslationQueue() {
+    if (!finalizedQueue.length) return;
+    const text = finalizedQueue.join(' ');
+    finalizedQueue.length = 0;
+    translateAndShow(text);
+}
+
+// Flush every 6 seconds
+setInterval(flushTranslationQueue, 6000);
 
 // Utility: convert Float32 [-1,1] buffer -> 16-bit PCM ArrayBuffer
 function floatTo16BitPCM(float32Array) {
@@ -634,8 +646,8 @@ async function startRecording() {
                     transcriptionBox.textContent = j.partial;
                 } else if (j.text) {
                     transcriptionBox.textContent = j.text;
-                    // Immediately translate final text
-                    translateAndShow(j.text);
+                    // Queue final text for periodic translation (flushed every 6s)
+                    finalizedQueue.push(j.text);
                 }
             }).catch(err => {
                 // Don't spam console on transient errors
@@ -683,7 +695,9 @@ async function stopRecording() {
                 const j = await r.json();
                 if (j && j.text) {
                     transcriptionBox.textContent = j.text;
-                    translateAndShow(j.text);
+                    // Queue final text and flush immediately on stop for lower latency
+                    finalizedQueue.push(j.text);
+                    flushTranslationQueue();
                 }
             } catch (e) {
                 console.debug('stt_stop parse error', e);
@@ -709,10 +723,34 @@ async function translateAndShow(text) {
         const resp = await fetch('/translate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: text, target: lang.value || 'en', input_lang: inputLang.value || 'auto' })
+            body: JSON.stringify({ text: text, target: lang.value || 'en', input_lang: inputLang.value || 'auto', synthesize: true })
         });
         const j = await resp.json();
         output.textContent = j.translated || '';
+        if (j && j.audio_url) {
+            // Play synthesized audio (add cache-bust)
+            const url = j.audio_url + '?t=' + Date.now();
+            const audio = new Audio(url);
+            const fname = (j.audio_url || '').split('/').pop();
+            const tryDelete = () => {
+                if (!fname) return;
+                fetch('/audio_delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename: fname })
+                }).catch(() => {});
+            };
+
+            audio.play().then(() => {
+                // Remove the file once playback ends
+                audio.addEventListener('ended', tryDelete);
+                audio.addEventListener('error', tryDelete);
+            }).catch(err => {
+                console.warn('Audio playback failed', err);
+                // If playback is blocked, delete after a short delay to avoid leftover files
+                setTimeout(tryDelete, 3000);
+            });
+        }
     } catch (e) {
         console.error('translate error', e);
         output.textContent = 'Translation error';
@@ -771,13 +809,30 @@ def translate():
         text = data.get('text', '')
         target_lang = data.get('target', 'en')
         input_lang = data.get('input_lang', 'auto')
+        synthesize = bool(data.get('synthesize', False))
 
         if not text:
             return jsonify({'translated': ''})
 
         # Use Gemini's translation function
         translated = translate_text(text, target_lang=target_lang, input_lang=input_lang)
-        return jsonify({'translated': translated})
+
+        audio_url = None
+        if synthesize and translated:
+            try:
+                uploads_dir = os.path.join(os.path.dirname(__file__), 'uploads')
+                os.makedirs(uploads_dir, exist_ok=True)
+                audio_bytes = synthesize_audio_bytes(translated)
+                audio_filename = secure_filename(f"translated_{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}.mp3")
+                audio_path = os.path.join(uploads_dir, audio_filename)
+                with open(audio_path, 'wb') as af:
+                    af.write(audio_bytes)
+                audio_url = f"/audio/{audio_filename}"
+            except Exception:
+                logging.exception('translate: TTS failed')
+                audio_url = None
+
+        return jsonify({'translated': translated, 'audio_url': audio_url})
 
 
 @app.route('/stt_start', methods=['POST'])
@@ -982,6 +1037,32 @@ def serve_audio(filename):
     """Serve generated audio files from uploads/"""
     uploads_dir = os.path.join(os.path.dirname(__file__), 'uploads')
     return send_from_directory(uploads_dir, filename)
+
+
+@app.route('/audio_delete', methods=['POST'])
+def audio_delete():
+    """Delete a generated audio file from uploads/ after playback."""
+    data = request.get_json(force=True) or {}
+    filename = data.get('filename')
+    if not filename:
+        return jsonify({'success': False, 'error': 'filename required'}), 400
+    filename = secure_filename(filename)
+    uploads_dir = os.path.join(os.path.dirname(__file__), 'uploads')
+    path = os.path.join(uploads_dir, filename)
+    # Ensure the resolved path is inside uploads_dir
+    try:
+        abs_path = os.path.abspath(path)
+        abs_uploads = os.path.abspath(uploads_dir)
+        if not abs_path.startswith(abs_uploads + os.sep) and abs_path != abs_uploads:
+            return jsonify({'success': False, 'error': 'invalid filename'}), 400
+        if os.path.exists(abs_path):
+            os.remove(abs_path)
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'not found'}), 404
+    except Exception as e:
+        logging.exception('audio_delete failed')
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
         # Run the app: visit http://127.0.0.1:5000/
