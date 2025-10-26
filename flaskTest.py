@@ -77,6 +77,7 @@ def load_model_at_path(path: str):
     with MODEL_LOCK:
         # Load new model (may take time)
         print("SELECTING MODEL WITH THE LANG CODE OF " + str(lang_code))
+        
         new_model = models[lang_code]
         MODEL = new_model
         MODEL_PATH = path
@@ -106,7 +107,7 @@ def ensure_model_loaded():
     if not os.path.isdir(MODEL_PATH):
         raise RuntimeError(f'Vosk model directory not found at: {MODEL_PATH}')
     # Load the model (can take time)
-    MODEL = Model(MODEL_PATH)
+    MODEL = models[MODEL_PATH.strip().split("_")[-1]]
     print('Vosk model loaded from', MODEL_PATH)
 
 app = Flask(__name__)
@@ -906,7 +907,7 @@ inputLang.addEventListener('change', async () => {
         }
     } catch (e) {
         console.error('stt_set_language error', e);
-        status.textContent = 'Model load error';
+        status.textContent = 'Model load error';p
         transcriptionBox.textContent = 'Model load error';
     } finally {
         recordBtn.disabled = false;
