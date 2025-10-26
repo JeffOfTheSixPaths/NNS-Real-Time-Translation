@@ -3,11 +3,47 @@ from werkzeug.utils import secure_filename
 import os
 from datetime import datetime
 import sys
+import uuid
+import threading
+import json
+import array
+import logging
+
+# Configure basic logging for debugging
+logging.basicConfig(level=logging.DEBUG)
 
 # Import STT module directly since it's in the same directory
 from STT import transcribe_audio
 from gemini import translate_text
 from TTS import synthesize_audio_bytes
+
+# Vosk realtime STT globals (lazy-load model)
+try:
+    from vosk import Model, KaldiRecognizer
+    VOSK_AVAILABLE = True
+except Exception as e:
+    Model = None
+    KaldiRecognizer = None
+    VOSK_AVAILABLE = False
+    print('Vosk import failed (install vosk to enable realtime STT):', e, file=sys.stderr)
+
+MODEL = None
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model')
+RECOGNIZERS = {}
+RECOGNIZERS_LOCK = threading.Lock()
+RECOGNIZER_LOCKS = {}
+
+def ensure_model_loaded():
+    global MODEL
+    if MODEL is not None:
+        return
+    if not VOSK_AVAILABLE:
+        raise RuntimeError('Vosk package not available in this Python environment')
+    if not os.path.isdir(MODEL_PATH):
+        raise RuntimeError(f'Vosk model directory not found at: {MODEL_PATH}')
+    # Load the model (can take time)
+    MODEL = Model(MODEL_PATH)
+    print('Vosk model loaded from', MODEL_PATH)
 
 app = Flask(__name__)
 
@@ -504,135 +540,208 @@ INDEX_HTML = """
     </div>
 
 <script>
+// Elements
 const inputLang = document.getElementById('inputLang');
 const lang = document.getElementById('lang');
 const output = document.getElementById('output');
 const status = document.getElementById('status');
 const transcriptionBox = document.getElementById('transcribed');
-
-// Clear Output button removed; use page refresh to reset UI or implement another control if needed.
-
-// Audio recording logic: press to start, press again to stop and upload
 const recordBtn = document.getElementById('recordBtn');
-let mediaRecorder = null;
-let audioChunks = [];
-let localStream = null;
+
+// Realtime streaming variables
+let audioContext = null;
+let processor = null;
+let mediaStream = null;
+let sessionId = null;
+let isStarting = false;
+
+// Utility: convert Float32 [-1,1] buffer -> 16-bit PCM ArrayBuffer
+function floatTo16BitPCM(float32Array) {
+    const buffer = new ArrayBuffer(float32Array.length * 2);
+    const view = new DataView(buffer);
+    let offset = 0;
+    for (let i = 0; i < float32Array.length; i++, offset += 2) {
+        let s = Math.max(-1, Math.min(1, float32Array[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return buffer;
+}
+
+function downsampleBuffer(buffer, inputSampleRate, outSampleRate) {
+    if (outSampleRate === inputSampleRate) {
+        return buffer;
+    }
+    if (outSampleRate > inputSampleRate) {
+        console.warn('downsampling rate should be smaller than original sample rate');
+        return buffer;
+    }
+    const sampleRateRatio = inputSampleRate / outSampleRate;
+    const newLength = Math.round(buffer.length / sampleRateRatio);
+    const result = new Float32Array(newLength);
+    let offsetResult = 0;
+    let offsetBuffer = 0;
+    while (offsetResult < result.length) {
+        const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+        // Use average value between the current and next offset
+        let accum = 0, count = 0;
+        for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+            accum += buffer[i];
+            count++;
+        }
+        result[offsetResult] = accum / count;
+        offsetResult++;
+        offsetBuffer = nextOffsetBuffer;
+    }
+    return result;
+}
 
 async function startRecording() {
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(localStream);
-        audioChunks = [];
-        mediaRecorder.addEventListener('dataavailable', e => audioChunks.push(e.data));
-        mediaRecorder.addEventListener('stop', onRecordingStop);
-    mediaRecorder.start();
-    // Show immediate listening state in the transcription box
-    try { if (transcriptionBox) transcriptionBox.textContent = 'Listening...'; } catch(e) {}
-        
-    // Disable controls immediately
-    inputLang.disabled = true;
-    lang.disabled = true;
-        
-        // Start countdown from 2
-        let countdown = 2;
-        recordBtn.textContent = `Starting in ${countdown}...`;
-        
-        const countdownInterval = setInterval(() => {
-            countdown--;
-            if (countdown > 0) {
-                recordBtn.textContent = `Starting in ${countdown}...`;
-            } else {
-                clearInterval(countdownInterval);
-                recordBtn.textContent = 'Stop Recording';
-                recordBtn.classList.add('recording');
-                status.textContent = 'Recording...';
-            }
-        }, 1000);
-        
+        // Create session on server
+        const startResp = await fetch('/stt_start', { method: 'POST' });
+        const startJson = await startResp.json();
+        sessionId = startJson.session_id;
+        if (!sessionId) throw new Error('Failed to create STT session');
+
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(mediaStream);
+
+        // ScriptProcessor is deprecated but widely supported; buffer size 4096 is a reasonable tradeoff
+        processor = audioContext.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = (evt) => {
+            const inputData = evt.inputBuffer.getChannelData(0);
+            const downsampled = downsampleBuffer(inputData, audioContext.sampleRate, 16000);
+            if (!downsampled) return;
+            const pcm16 = floatTo16BitPCM(downsampled);
+
+            // POST the raw PCM16 bytes to /stt_chunk
+            fetch('/stt_chunk?session_id=' + encodeURIComponent(sessionId), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/octet-stream' },
+                body: pcm16
+            }).then(r => r.json()).then(j => {
+                // Vosk returns { partial: '...' } for partials and { text: '...' } or {result:[...], text:'...'} for finals
+                if (!j) return;
+                if (j.partial) {
+                    transcriptionBox.textContent = j.partial;
+                } else if (j.text) {
+                    transcriptionBox.textContent = j.text;
+                    // Immediately translate final text
+                    translateAndShow(j.text);
+                }
+            }).catch(err => {
+                // Don't spam console on transient errors
+                console.debug('stt_chunk error', err);
+            });
+        };
+
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+
+        // UI updates
+        inputLang.disabled = true;
+        lang.disabled = true;
+        recordBtn.textContent = 'Stop Recording';
+        recordBtn.classList.add('recording');
+        status.textContent = 'Recording...';
+        transcriptionBox.textContent = 'Listening...';
     } catch (err) {
-        console.error('Microphone access denied or error:', err);
+        console.error('startRecording error', err);
         status.textContent = 'Microphone error';
-        recordBtn.classList.remove('recording');
     }
 }
 
-function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop();
-    }
-    if (localStream) {
-        localStream.getTracks().forEach(t => t.stop());
-        localStream = null;
-    }
-    
-    // Clear any potential countdown styles
-    recordBtn.style.animation = 'none';
-    recordBtn.textContent = 'Start Recording';
-    recordBtn.classList.remove('recording');
-    
-    // Re-enable controls
-    inputLang.disabled = false;
-    lang.disabled = false;
-}
+async function stopRecording() {
+    try {
+        // Stop audio nodes
+        if (processor) {
+            processor.disconnect();
+            processor.onaudioprocess = null;
+            processor = null;
+        }
+        if (audioContext) {
+            try { audioContext.close(); } catch(e) {}
+            audioContext = null;
+        }
+        if (mediaStream) {
+            mediaStream.getTracks().forEach(t => t.stop());
+            mediaStream = null;
+        }
 
-function onRecordingStop() {
-    const blob = new Blob(audioChunks, { type: 'audio/webm' });
-    const form = new FormData();
-    // Provide a filename; server will sanitize
-    form.append('audio_data', blob, 'recording.webm');
-    // include the selected input language (spoken language) if present
-    try { 
-        form.append('input_lang', inputLang ? inputLang.value : 'auto');
-        form.append('target_lang', lang ? lang.value : 'en');
-    } catch(e) {}
-    status.textContent = 'Uploading...';
-    fetch('/upload_audio', { method: 'POST', body: form })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                status.textContent = 'Transcription complete';
-                // Show transcription under the record button
-                if (transcriptionBox) transcriptionBox.textContent = data.transcription || 'No transcription available';
-                // Show only the translated text in the translation output area
-                output.textContent = data.translated || 'Translation not available';
-                
-                // Swap input and output languages to prep for the other person's response
-                if (inputLang && lang) {
-                    const tempLang = inputLang.value;
-                    inputLang.value = lang.value;
-                    lang.value = tempLang;
+        // Tell server to finalize and get last result
+        if (sessionId) {
+            const r = await fetch('/stt_stop?session_id=' + encodeURIComponent(sessionId), { method: 'POST' });
+            try {
+                const j = await r.json();
+                if (j && j.text) {
+                    transcriptionBox.textContent = j.text;
+                    translateAndShow(j.text);
                 }
-                
-                // If server returned an audio URL, play it
-                try {
-                    if (data.audio_url) {
-                        // Add cache-busting parameter to ensure we get the latest audio
-                        const audioUrlWithCacheBust = data.audio_url + '?t=' + Date.now();
-                        const audio = new Audio(audioUrlWithCacheBust);
-                        // allow autoplay in browsers that permit it; otherwise user gesture already occurred
-                        audio.play().catch(err => console.warn('Audio playback failed', err));
-                    }
-                } catch (err) {
-                    console.error('Failed to play returned audio', err);
-                }
-            } else {
-                // Server returned an error
-                if (transcriptionBox) transcriptionBox.textContent = data.transcription || 'No transcription available';
-                output.textContent = '';
-                status.textContent = 'Error: ' + (data.error || 'Unknown error');
-                console.error('Upload failed:', data);
+            } catch (e) {
+                console.debug('stt_stop parse error', e);
             }
-        })
-        .catch(err => {
-            console.error('Upload error', err);
-            status.textContent = 'Upload error';
-        });
+            sessionId = null;
+        }
+
+        // UI updates
+        recordBtn.textContent = 'Start Recording';
+        recordBtn.classList.remove('recording');
+        inputLang.disabled = false;
+        lang.disabled = false;
+        status.textContent = 'Idle';
+    } catch (err) {
+        console.error('stopRecording error', err);
+    }
 }
 
+async function translateAndShow(text) {
+    if (!text || !text.trim()) return;
+    output.textContent = 'Translating...';
+    try {
+        const resp = await fetch('/translate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: text, target: lang.value || 'en', input_lang: inputLang.value || 'auto' })
+        });
+        const j = await resp.json();
+        output.textContent = j.translated || '';
+    } catch (e) {
+        console.error('translate error', e);
+        output.textContent = 'Translation error';
+    }
+}
+
+// Toggle recording on button press with immediate UI feedback to avoid perceived delay
 recordBtn.addEventListener('click', () => {
-    if (!mediaRecorder || mediaRecorder.state === 'inactive') {
-        startRecording();
+    if (!mediaStream && !isStarting) {
+        // Provide instant visual feedback while getUserMedia / AudioContext initialize
+        isStarting = true;
+        recordBtn.textContent = 'Stop Recording';
+        recordBtn.classList.add('recording');
+        inputLang.disabled = true;
+        lang.disabled = true;
+        status.textContent = 'Initializing...';
+        transcriptionBox.textContent = 'Starting...';
+
+        // Start recording asynchronously; update status when ready or revert on error
+        startRecording().then(() => {
+            isStarting = false;
+            status.textContent = 'Recording...';
+        }).catch(err => {
+            console.error('startRecording failed', err);
+            isStarting = false;
+            // Revert UI
+            recordBtn.textContent = 'Start Recording';
+            recordBtn.classList.remove('recording');
+            inputLang.disabled = false;
+            lang.disabled = false;
+            status.textContent = 'Microphone error';
+            transcriptionBox.textContent = 'Nothing yet';
+        });
     } else {
+        // Immediate feedback for stopping
+        status.textContent = 'Stopping...';
         stopRecording();
     }
 });
@@ -662,6 +771,120 @@ def translate():
         # Use Gemini's translation function
         translated = translate_text(text, target_lang=target_lang, input_lang=input_lang)
         return jsonify({'translated': translated})
+
+
+@app.route('/stt_start', methods=['POST'])
+def stt_start():
+    """Start a Vosk recognizer session and return a session_id."""
+    try:
+        ensure_model_loaded()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    session_id = request.args.get('session_id') or str(uuid.uuid4())
+    sample_rate = 16000
+    with RECOGNIZERS_LOCK:
+        # Create a new recognizer for this session
+        rec = KaldiRecognizer(MODEL, sample_rate)
+        RECOGNIZERS[session_id] = rec
+        # Per-session lock to serialize access to the recognizer (Flask may handle requests concurrently)
+        RECOGNIZER_LOCKS[session_id] = threading.Lock()
+    return jsonify({'session_id': session_id})
+
+
+@app.route('/stt_chunk', methods=['POST'])
+def stt_chunk():
+    """Accept raw PCM16 bytes for the given session_id and return partial or final JSON result from Vosk."""
+    session_id = request.args.get('session_id')
+    if not session_id:
+        return jsonify({'error': 'session_id required'}), 400
+    data = request.get_data()
+    logging.debug('stt_chunk called: session=%s, bytes=%d', session_id, len(data) if data is not None else 0)
+    if not data:
+        # Tolerate empty chunks (can happen); respond with an empty partial instead of an error
+        logging.debug('stt_chunk: empty body for session %s', session_id)
+        return jsonify({'partial': ''})
+
+    with RECOGNIZERS_LOCK:
+        rec = RECOGNIZERS.get(session_id)
+    if rec is None:
+        logging.warning('stt_chunk: unknown session_id %s', session_id)
+        return jsonify({'error': 'unknown session_id'}), 400
+
+    try:
+        # Defensive checks: Vosk expects 16-bit little-endian PCM. Ensure even number of bytes.
+        if len(data) % 2 != 0:
+            # Drop the trailing byte to keep pairs intact
+            logging.debug('stt_chunk: odd-length chunk received (%d), dropping last byte', len(data))
+            data = data[:-1]
+
+        # Ignore trivially small chunks
+        if len(data) < 4:
+            return jsonify({'partial': ''})
+
+        # Convert to array of int16 to validate format (will raise if bytes length mismatched)
+        try:
+            a = array.array('h')
+            a.frombytes(data)
+            # Ensure native byteorder is little-endian for Vosk; if system is big-endian, byteswap
+            if sys.byteorder == 'big':
+                a.byteswap()
+            pcm_bytes = a.tobytes()
+        except Exception as e:
+            logging.exception('stt_chunk: failed to parse incoming audio bytes as int16')
+            return jsonify({'error': 'invalid audio data'}), 400
+
+        # Acquire per-recognizer lock to prevent concurrent calls into Vosk C++ decoder
+        lock = None
+        with RECOGNIZERS_LOCK:
+            lock = RECOGNIZER_LOCKS.get(session_id)
+        if lock is None:
+            logging.warning('stt_chunk: missing per-session lock for %s', session_id)
+            return jsonify({'error': 'session lock missing'}), 500
+
+        lock.acquire()
+        try:
+            accepted = rec.AcceptWaveform(pcm_bytes)
+        finally:
+            lock.release()
+        if accepted:
+            # Final chunk produced a final result
+            res = rec.Result()
+            # Result is already JSON string; return as JSON
+            return app.response_class(res, mimetype='application/json')
+        else:
+            # Partial result
+            pres = rec.PartialResult()
+            return app.response_class(pres, mimetype='application/json')
+    except Exception as e:
+        logging.exception('stt_chunk exception')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/stt_stop', methods=['POST'])
+def stt_stop():
+    """Finalize a recognizer session and return the final text."""
+    session_id = request.args.get('session_id')
+    if not session_id:
+        return jsonify({'error': 'session_id required'}), 400
+    with RECOGNIZERS_LOCK:
+        rec = RECOGNIZERS.pop(session_id, None)
+        lock = RECOGNIZER_LOCKS.pop(session_id, None)
+    if rec is None:
+        return jsonify({'error': 'unknown session_id'}), 400
+    try:
+        # Acquire the per-session lock before finalizing to ensure no in-flight AcceptWaveform calls
+        if lock:
+            lock.acquire()
+        try:
+            final = rec.FinalResult()
+        finally:
+            if lock:
+                lock.release()
+        return app.response_class(final, mimetype='application/json')
+    except Exception as e:
+        logging.exception('stt_stop exception')
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/upload_audio', methods=['POST'])
