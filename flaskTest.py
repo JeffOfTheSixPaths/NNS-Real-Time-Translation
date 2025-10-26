@@ -533,8 +533,8 @@ async function startRecording() {
     inputLang.disabled = true;
     lang.disabled = true;
         
-        // Start countdown from 3
-        let countdown = 3;
+        // Start countdown from 2
+        let countdown = 2;
         recordBtn.textContent = `Starting in ${countdown}...`;
         
         const countdownInterval = setInterval(() => {
@@ -595,10 +595,20 @@ function onRecordingStop() {
                 if (transcriptionBox) transcriptionBox.textContent = data.transcription || 'No transcription available';
                 // Show only the translated text in the translation output area
                 output.textContent = data.translated || 'Translation not available';
+                
+                // Swap input and output languages to prep for the other person's response
+                if (inputLang && lang) {
+                    const tempLang = inputLang.value;
+                    inputLang.value = lang.value;
+                    lang.value = tempLang;
+                }
+                
                 // If server returned an audio URL, play it
                 try {
                     if (data.audio_url) {
-                        const audio = new Audio(data.audio_url);
+                        // Add cache-busting parameter to ensure we get the latest audio
+                        const audioUrlWithCacheBust = data.audio_url + '?t=' + Date.now();
+                        const audio = new Audio(audioUrlWithCacheBust);
                         // allow autoplay in browsers that permit it; otherwise user gesture already occurred
                         audio.play().catch(err => console.warn('Audio playback failed', err));
                     }
