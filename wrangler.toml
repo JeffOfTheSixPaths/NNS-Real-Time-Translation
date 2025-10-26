@@ -1,0 +1,9 @@
+name = "realtime-translator"
+compatibility_date = "2024-10-01"
+
+[vars]
+# optional defaults; real secrets go via wrangler secrets
+ELEVENLABS_STT_MODEL = "eleven_multilingual_v2"
+
+# Pages Functions config (if deploying via wrangler pages)
+pages_build_output_dir = "dist"

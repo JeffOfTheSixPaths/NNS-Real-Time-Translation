@@ -3,12 +3,16 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "license": "MIT",
+  "private": true,
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "clean": "python -c \"import shutil, pathlib; d=pathlib.Path('dist'); shutil.rmtree(d, ignore_errors=True); print('dist cleaned')\"",
+    "build": "python build.py",
+    "build:from-src": "python build.py NNS-Real-Time-Translation",
+    "serve": "python -m http.server --directory dist 8000"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20251014.0",
     "typescript": "^5.9.3"
