@@ -29,10 +29,60 @@ except Exception as e:
     print('Vosk import failed (install vosk to enable realtime STT):', e, file=sys.stderr)
 
 MODEL = None
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model')
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'model_english')
 RECOGNIZERS = {}
 RECOGNIZERS_LOCK = threading.Lock()
 RECOGNIZER_LOCKS = {}
+
+MODEL_LOCK = threading.Lock()
+
+def find_model_for_language(lang_code: str):
+    """Try common locations for a language-specific Vosk model directory.
+    Returns the path if found, otherwise None.
+    """
+    base = os.path.dirname(__file__)
+    candidates = [
+        os.path.join(base, f"model-{lang_code}"),
+        os.path.join(base, f"model_{lang_code}"),
+        os.path.join(base, 'models', lang_code),
+        os.path.join(base, 'models', f"model-{lang_code}"),
+        os.path.join(base, 'models', f"model_{lang_code}"),
+        os.path.join(base, 'model')  # fallback to default
+    ]
+    for p in candidates:
+        if os.path.isdir(p):
+            return p
+    return None
+
+def load_model_at_path(path: str):
+    """Load a Vosk model from path and replace the global MODEL. Clears existing recognizers."""
+    global MODEL, MODEL_PATH
+    if not VOSK_AVAILABLE:
+        raise RuntimeError('Vosk not available')
+    if not os.path.isdir(path):
+        raise RuntimeError(f'Model path not found: {path}')
+
+    with MODEL_LOCK:
+        # Load new model (may take time)
+        new_model = Model(path)
+        MODEL = new_model
+        MODEL_PATH = path
+
+    # Clear existing recognizers safely
+    with RECOGNIZERS_LOCK:
+        RECOGNIZERS.clear()
+        # Release and clear per-session locks
+        for k, lk in list(RECOGNIZER_LOCKS.items()):
+            try:
+                # best-effort release if locked
+                if lk.locked():
+                    try:
+                        lk.release()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        RECOGNIZER_LOCKS.clear()
 
 def ensure_model_loaded():
     global MODEL
@@ -790,6 +840,42 @@ recordBtn.addEventListener('click', () => {
         stopRecording();
     }
 });
+
+// When the input language changes, request the server to load an appropriate Vosk model.
+inputLang.addEventListener('change', async () => {
+    const newLang = inputLang.value;
+    // If currently recording, stop first to avoid switching mid-stream
+    if (mediaStream) {
+        status.textContent = 'Stopping to switch model...';
+        try { await stopRecording(); } catch (e) { console.warn('stopRecording failed during model switch', e); }
+    }
+
+    recordBtn.disabled = true;
+    status.textContent = 'Loading model for ' + newLang + '...';
+    transcriptionBox.textContent = 'Loading model...';
+
+    try {
+        const resp = await fetch('/stt_set_language', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lang: newLang })
+        });
+        const j = await resp.json();
+        if (j && j.success) {
+            status.textContent = 'Model loaded: ' + (j.model_path || newLang);
+            transcriptionBox.textContent = 'Model ready (' + newLang + ')';
+        } else {
+            status.textContent = 'Model load failed';
+            transcriptionBox.textContent = 'Model load failed: ' + (j && j.error ? j.error : 'unknown');
+        }
+    } catch (e) {
+        console.error('stt_set_language error', e);
+        status.textContent = 'Model load error';
+        transcriptionBox.textContent = 'Model load error';
+    } finally {
+        recordBtn.disabled = false;
+    }
+});
 </script>
 </div>
 </body>
@@ -852,6 +938,30 @@ def stt_start():
         # Per-session lock to serialize access to the recognizer (Flask may handle requests concurrently)
         RECOGNIZER_LOCKS[session_id] = threading.Lock()
     return jsonify({'session_id': session_id})
+
+
+@app.route('/stt_set_language', methods=['POST'])
+def stt_set_language():
+    """Switch the Vosk model to match the requested language code.
+    Expects JSON {"lang": "en"} or form/query param 'lang'.
+    """
+    data = request.get_json(silent=True) or {}
+    lang_code = data.get('lang') or request.form.get('lang') or request.args.get('lang')
+    if not lang_code:
+        return jsonify({'success': False, 'error': 'lang required'}), 400
+
+    # Stop any active recognizers and load the model if found
+    model_path = find_model_for_language(lang_code)
+    if not model_path:
+        return jsonify({'success': False, 'error': f'No model found for lang {lang_code}'}), 404
+
+    try:
+        load_model_at_path(model_path)
+        logging.info('stt_set_language: loaded model for %s at %s', lang_code, model_path)
+        return jsonify({'success': True, 'model_path': model_path})
+    except Exception as e:
+        logging.exception('stt_set_language failed')
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/stt_chunk', methods=['POST'])
