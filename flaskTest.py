@@ -36,6 +36,9 @@ RECOGNIZER_LOCKS = {}
 
 MODEL_LOCK = threading.Lock()
 
+
+
+
 def find_model_for_language(lang_code: str):
     """Try common locations for a language-specific Vosk model directory.
     Returns the path if found, otherwise None.
@@ -54,8 +57,17 @@ def find_model_for_language(lang_code: str):
             return p
     return None
 
+
+models= {}
+model_lang = ['de', 'en', 'es', 'fr', 'zh']
+for lang in model_lang:
+    models[lang] = Model(find_model_for_language(lang))
+
+
 def load_model_at_path(path: str):
     """Load a Vosk model from path and replace the global MODEL. Clears existing recognizers."""
+    lang_code = path.strip().split("_")[-1]
+    print("the candidates are:")
     global MODEL, MODEL_PATH
     if not VOSK_AVAILABLE:
         raise RuntimeError('Vosk not available')
@@ -64,7 +76,8 @@ def load_model_at_path(path: str):
 
     with MODEL_LOCK:
         # Load new model (may take time)
-        new_model = Model(path)
+        print("SELECTING MODEL WITH THE LANG CODE OF " + str(lang_code))
+        new_model = models[lang_code]
         MODEL = new_model
         MODEL_PATH = path
 
