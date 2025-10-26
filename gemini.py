@@ -3,7 +3,7 @@ from google import genai
 import os
 
 # The client gets the API key from the environment variable `GEMINI_API_KEY`.
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key="AIzaSyBXULlWPUWW1KmF-7kPlt2N176-ivC6WHI")
 
 def translate_text(input_text: str, target_lang: str, input_lang: str = "auto") -> str:
     """

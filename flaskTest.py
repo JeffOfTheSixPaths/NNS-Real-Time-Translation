@@ -1,5 +1,6 @@
-from flask import Flask, request, jsonify, render_template_string, send_from_directory
+from flask import Flask, request, jsonify, render_template_string, send_from_directory, redirect
 from werkzeug.utils import secure_filename
+from werkzeug.middleware.proxy_fix import ProxyFix
 import os
 from datetime import datetime
 import sys
@@ -46,6 +47,12 @@ def ensure_model_loaded():
     print('Vosk model loaded from', MODEL_PATH)
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
+@app.before_request
+def enforce_https():
+    # Cloudflare sets this header
+    if request.headers.get("X-Forwarded-Proto") == "http":
+        return redirect(request.url.replace("http://", "https://", 1), code=301)
 
 # Basic in-file HTML template with a small real-time UI using fetch()
 INDEX_HTML = """
