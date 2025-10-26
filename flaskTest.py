@@ -571,8 +571,8 @@ function flushTranslationQueue() {
     translateAndShow(text);
 }
 
-// Flush every 6 seconds
-setInterval(flushTranslationQueue, 6000);
+// Flush every 2 seconds (reduced from 6s to speed up translation batching)
+setInterval(flushTranslationQueue, 2000);
 
 // Utility: convert Float32 [-1,1] buffer -> 16-bit PCM ArrayBuffer
 function floatTo16BitPCM(float32Array) {
