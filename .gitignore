@@ -1,0 +1,22 @@
+# Local env file
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+
+# Local project-specific envs and IDE configs
+functions/api/python/.env
+functions/api/python/.venv/
+.vscode/
+
+# Node / build artefacts
+node_modules/
+dist/
+.next/
+
+# OS files
+.DS_Store
