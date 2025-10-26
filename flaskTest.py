@@ -539,7 +539,27 @@ INDEX_HTML = """
             .content { margin: 16px; min-height: 580px; }
             /* on small screens let the panels stack naturally (remove rigid half-split) */
             .controls-panel, .output-panel { flex: 0 0 auto; padding: 20px; }
-            .divider { margin: 12px 0; height: 10px; }
+            .divider { margin: 12px 0; height: 10px; display:flex; align-items:center; justify-content:center; }
+            /* Swap button styles */
+            .swap-btn {
+                display:inline-grid;
+                place-items:center;
+                width:54px;
+                height:54px;
+                border-radius:999px;
+                border: none;
+                background: linear-gradient(135deg, #ff7b40, #ffb66c);
+                color: white;
+                font-size: 20px;
+                box-shadow: 0 6px 18px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.08);
+                cursor: pointer;
+                transition: transform 220ms cubic-bezier(.2,.9,.2,1), box-shadow 180ms;
+            }
+            .swap-btn:hover { transform: translateY(-3px); box-shadow: 0 10px 22px rgba(0,0,0,0.14); }
+            .swap-btn:active { transform: translateY(0) scale(0.98); }
+            .swap-btn.rotate { transform: rotate(180deg); }
+            .swap-btn.shake { animation: shake 260ms; }
+            @keyframes shake { 10%{ transform: translateX(-4px) } 30%{ transform: translateX(4px) } 50%{ transform: translateX(-3px) } 70%{ transform: translateX(2px) } 100%{ transform: translateX(0) } }
         }
     </style>
 </head>
@@ -576,7 +596,9 @@ INDEX_HTML = """
         </div>
     </div>
 
-    <div class="divider" aria-hidden="true"></div>
+    <div class="divider" role="separator" aria-hidden="true">
+        <button id="swapLangBtn" class="swap-btn" title="Swap input and target languages" aria-label="Swap languages">⇄</button>
+    </div>
 
     <div class="output-panel">
         <div class="row">
@@ -604,6 +626,7 @@ const output = document.getElementById('output');
 const status = document.getElementById('status');
 const transcriptionBox = document.getElementById('transcribed');
 const recordBtn = document.getElementById('recordBtn');
+const swapBtn = document.getElementById('swapLangBtn');
 
 // Realtime streaming variables
 let audioContext = null;
@@ -876,6 +899,36 @@ inputLang.addEventListener('change', async () => {
         recordBtn.disabled = false;
     }
 });
+
+// Swap input and target language selections when the swap button is clicked
+if (swapBtn) {
+    swapBtn.addEventListener('click', async (e) => {
+        // brief rotate animation
+        swapBtn.classList.add('rotate');
+        setTimeout(() => swapBtn.classList.remove('rotate'), 300);
+
+        const a = inputLang.value;
+        const b = lang.value;
+        // If the languages are the same, flash a gentle shake to show no-op
+        if (a === b) {
+            swapBtn.classList.add('shake');
+            setTimeout(() => swapBtn.classList.remove('shake'), 300);
+            return;
+        }
+
+        // Swap the values
+        inputLang.value = b;
+        lang.value = a;
+
+        // Trigger the input language change handler so server model loads if needed
+        try {
+            inputLang.dispatchEvent(new Event('change', { bubbles: true }));
+        } catch (err) {
+            // Fallback: call handler function directly by setting inputLang.value already changed
+            console.debug('swap: dispatchEvent failed', err);
+        }
+    });
+}
 </script>
 </div>
 </body>
